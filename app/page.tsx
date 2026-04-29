@@ -147,7 +147,7 @@ export default function Home() {
 
       if (failedPlatforms.length) {
         setError(
-          `${failedPlatforms.length} platform request${failedPlatforms.length === 1 ? "" : "s"} failed. Try again with fewer platforms or set OPENAI_IMAGE_QUALITY=low in Railway.`,
+          `${failedPlatforms.length} platform request${failedPlatforms.length === 1 ? "" : "s"} failed. Check /api/openai-check on your Railway URL, then /api/openai-check?image=1.`,
         );
       }
     } catch (caught) {
