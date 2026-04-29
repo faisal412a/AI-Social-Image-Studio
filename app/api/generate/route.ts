@@ -24,24 +24,24 @@ export async function POST(request: NextRequest) {
     const savedProfile = await getProfile();
     const input = parseGenerationForm(formData, { logoUrl, savedProfile });
 
-    const images = await Promise.all(
-      input.selectedPlatforms.map(async (platform) => {
-        const spec = PLATFORM_SPECS[platform];
-        const prompt = buildPrompt(input, platform);
-        const generated = await generateImageForPlatform(prompt, platform);
+    const images = [];
 
-        return {
-          platform,
-          platformName: spec.name,
-          size: spec.size,
-          width: spec.width,
-          height: spec.height,
-          prompt,
-          status: "generated" as const,
-          ...generated,
-        };
-      }),
-    );
+    for (const platform of input.selectedPlatforms) {
+      const spec = PLATFORM_SPECS[platform];
+      const prompt = buildPrompt(input, platform);
+      const generated = await generateImageForPlatform(prompt, platform);
+
+      images.push({
+        platform,
+        platformName: spec.name,
+        size: spec.size,
+        width: spec.width,
+        height: spec.height,
+        prompt,
+        status: "generated" as const,
+        ...generated,
+      });
+    }
 
     const profile = await saveProfile({
       companyName: input.companyName,

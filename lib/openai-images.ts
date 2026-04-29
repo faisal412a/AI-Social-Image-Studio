@@ -2,22 +2,30 @@ import OpenAI from "openai";
 import { PLATFORM_SPECS, type PlatformKey } from "./platforms";
 
 const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+const imageQuality = process.env.OPENAI_IMAGE_QUALITY || "medium";
+const requestTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
 
 export async function generateImageForPlatform(prompt: string, platform: PlatformKey) {
   if (!process.env.OPENAI_API_KEY) {
     return createDemoImage(platform);
   }
 
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    maxRetries: 2,
+    timeout: requestTimeoutMs,
+  });
   const spec = PLATFORM_SPECS[platform];
 
-  const response = await client.images.generate({
-    model,
-    prompt,
-    size: spec.generationSize,
-    quality: "high",
-    n: 1,
-  });
+  const response = await withImageRetry(() =>
+    client.images.generate({
+      model,
+      prompt,
+      size: spec.generationSize,
+      quality: imageQuality as "low" | "medium" | "high" | "auto",
+      n: 1,
+    }),
+  );
 
   const image = response.data?.[0];
   const base64 = image?.b64_json;
@@ -30,6 +38,65 @@ export async function generateImageForPlatform(prompt: string, platform: Platfor
     imageBase64: base64,
     imageUrl: `data:image/png;base64,${base64}`,
   };
+}
+
+async function withImageRetry<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts || !isTransientOpenAIError(error)) break;
+      await wait(900 * attempt);
+    }
+  }
+
+  throw normalizeOpenAIError(lastError);
+}
+
+function isTransientOpenAIError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const status = typeof error === "object" && error && "status" in error ? Number(error.status) : 0;
+
+  return (
+    message.includes("connection") ||
+    message.includes("timeout") ||
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    status >= 500
+  );
+}
+
+function normalizeOpenAIError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return new Error("OpenAI image generation failed. Please try again.");
+  }
+
+  const message = error.message.toLowerCase();
+  const status = typeof error === "object" && error && "status" in error ? Number(error.status) : 0;
+
+  if (message.includes("connection") || message.includes("timeout")) {
+    return new Error(
+      "The server could not maintain a connection to OpenAI. Try generating one or two platforms first, then regenerate the rest.",
+    );
+  }
+
+  if (status === 401) {
+    return new Error("OpenAI rejected the API key. Check OPENAI_API_KEY in Railway and redeploy.");
+  }
+
+  if (status === 429) {
+    return new Error("OpenAI rate limit or quota was reached. Please wait a bit or check billing/usage.");
+  }
+
+  return error;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createDemoImage(platform: PlatformKey) {
