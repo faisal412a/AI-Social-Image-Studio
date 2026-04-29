@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { PLATFORM_SPECS, type PlatformKey } from "./platforms";
 
 const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
-const imageQuality = process.env.OPENAI_IMAGE_QUALITY || "medium";
+const imageQuality = process.env.OPENAI_IMAGE_QUALITY || "low";
 const requestTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
 
 export async function generateImageForPlatform(prompt: string, platform: PlatformKey) {

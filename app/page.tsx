@@ -117,27 +117,39 @@ export default function Home() {
     setImages({});
     setStatuses(Object.fromEntries(selectedPlatforms.map((platform) => [platform, "loading"])));
 
+    const failedPlatforms: string[] = [];
+
     try {
-      const formData = buildFormData();
-      const response = await fetch("/api/generate", { method: "POST", body: formData });
-      const payload = await response.json();
+      for (const platform of selectedPlatforms) {
+        const formData = buildFormData([platform]);
+        const response = await fetch("/api/generate", { method: "POST", body: formData });
+        const payload = await response.json();
 
-      if (!response.ok) throw new Error(payload.error || "Image generation failed.");
+        if (!response.ok) {
+          failedPlatforms.push(platform);
+          setStatuses((current) => ({ ...current, [platform]: "error" }));
+          setError(payload.error || "One platform failed. The remaining platforms will continue.");
+          continue;
+        }
 
-      const nextImages: ImageState = {};
-      const nextStatuses: StatusState = {};
-      payload.images.forEach((image: GeneratedImage) => {
-        nextImages[image.platform] = image;
-        nextStatuses[image.platform] = "generated";
-      });
+        const image = payload.images?.[0] as GeneratedImage | undefined;
+        if (image) {
+          setImages((current) => ({ ...current, [image.platform]: image }));
+          setStatuses((current) => ({ ...current, [image.platform]: "generated" }));
+        }
+        if (payload.profile) setProfile(payload.profile);
+      }
 
-      setImages(nextImages);
-      setStatuses(nextStatuses);
-      setProfile(payload.profile);
       setHistory((current) => [
         `${form.eventName || "Untitled campaign"} - ${new Date().toLocaleString()}`,
         ...current,
       ].slice(0, 12));
+
+      if (failedPlatforms.length) {
+        setError(
+          `${failedPlatforms.length} platform request${failedPlatforms.length === 1 ? "" : "s"} failed. Try again with fewer platforms or set OPENAI_IMAGE_QUALITY=low in Railway.`,
+        );
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Something went wrong.");
       setStatuses(Object.fromEntries(selectedPlatforms.map((platform) => [platform, "error"])));
@@ -184,10 +196,10 @@ export default function Home() {
     setForm(initialForm);
   }
 
-  function buildFormData() {
+  function buildFormData(platforms = selectedPlatforms) {
     const formData = new FormData();
     Object.entries(form).forEach(([key, value]) => formData.append(key, value));
-    formData.append("selectedPlatforms", JSON.stringify(selectedPlatforms));
+    formData.append("selectedPlatforms", JSON.stringify(platforms));
     formData.append("companyMemory", JSON.stringify(profile));
     if (logoFile) formData.append("logoFile", logoFile);
     return formData;

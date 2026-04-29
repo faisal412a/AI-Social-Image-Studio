@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ images, profile });
   } catch (error) {
+    console.error("/api/generate failed", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Image generation failed." },
       { status: 400 },

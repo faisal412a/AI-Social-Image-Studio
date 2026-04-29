@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
+    console.error("/api/regenerate failed", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not regenerate image." },
       { status: 400 },
