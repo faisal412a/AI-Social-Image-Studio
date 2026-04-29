@@ -1,43 +1,85 @@
-import OpenAI from "openai";
 import { PLATFORM_SPECS, type PlatformKey } from "./platforms";
 
 const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const imageQuality = process.env.OPENAI_IMAGE_QUALITY || "low";
+const outputFormat = process.env.OPENAI_IMAGE_FORMAT || "jpeg";
+const outputCompression = Number(process.env.OPENAI_IMAGE_COMPRESSION || 80);
 const requestTimeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 120_000);
+
+type OpenAIImageResponse = {
+  data?: Array<{ b64_json?: string }>;
+  error?: { message?: string; type?: string; code?: string };
+};
 
 export async function generateImageForPlatform(prompt: string, platform: PlatformKey) {
   if (!process.env.OPENAI_API_KEY) {
     return createDemoImage(platform);
   }
 
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 2,
-    timeout: requestTimeoutMs,
-  });
   const spec = PLATFORM_SPECS[platform];
-
   const response = await withImageRetry(() =>
-    client.images.generate({
+    postImageGeneration({
       model,
       prompt,
       size: spec.generationSize,
-      quality: imageQuality as "low" | "medium" | "high" | "auto",
+      quality: imageQuality,
       n: 1,
+      output_format: outputFormat,
+      output_compression: outputCompression,
+      background: "opaque",
     }),
   );
 
-  const image = response.data?.[0];
-  const base64 = image?.b64_json;
+  const base64 = response.data?.[0]?.b64_json;
 
   if (!base64) {
     throw new Error("OpenAI did not return image data.");
   }
 
+  const mimeType = outputFormat === "png" ? "image/png" : `image/${outputFormat}`;
+
   return {
     imageBase64: base64,
-    imageUrl: `data:image/png;base64,${base64}`,
+    imageUrl: `data:${mimeType};base64,${base64}`,
   };
+}
+
+async function postImageGeneration(body: Record<string, unknown>) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const text = await response.text();
+    const payload = safeJsonParse<OpenAIImageResponse>(text);
+
+    if (!response.ok) {
+      const detail = payload?.error?.message || text || response.statusText;
+      const error = new Error(`OpenAI image API error (${response.status}): ${detail}`);
+      Object.assign(error, { status: response.status, detail });
+      throw error;
+    }
+
+    if (!payload) {
+      throw new Error("OpenAI returned an unreadable image response.");
+    }
+
+    return payload;
+  } catch (error) {
+    console.error("OpenAI image request failed", describeError(error));
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function withImageRetry<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
@@ -49,7 +91,7 @@ async function withImageRetry<T>(operation: () => Promise<T>, attempts = 3): Pro
     } catch (error) {
       lastError = error;
       if (attempt === attempts || !isTransientOpenAIError(error)) break;
-      await wait(900 * attempt);
+      await wait(1_000 * attempt);
     }
   }
 
@@ -63,6 +105,7 @@ function isTransientOpenAIError(error: unknown) {
   return (
     message.includes("connection") ||
     message.includes("timeout") ||
+    message.includes("aborted") ||
     status === 408 ||
     status === 409 ||
     status === 429 ||
@@ -78,10 +121,16 @@ function normalizeOpenAIError(error: unknown) {
   const message = error.message.toLowerCase();
   const status = typeof error === "object" && error && "status" in error ? Number(error.status) : 0;
 
-  if (message.includes("connection") || message.includes("timeout")) {
-    return new Error(
-      "The server could not maintain a connection to OpenAI. Try generating one or two platforms first, then regenerate the rest.",
-    );
+  if (message.includes("aborted") || message.includes("timeout")) {
+    return new Error("OpenAI image generation timed out. Try one platform at a time or reduce prompt complexity.");
+  }
+
+  if (message.includes("connection") || message.includes("fetch failed")) {
+    return new Error("The server could not connect to OpenAI. Check Railway networking and try again.");
+  }
+
+  if (status === 400) {
+    return error;
   }
 
   if (status === 401) {
@@ -93,6 +142,25 @@ function normalizeOpenAIError(error: unknown) {
   }
 
   return error;
+}
+
+function safeJsonParse<T>(text: string) {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+function describeError(error: unknown) {
+  if (!(error instanceof Error)) return { error };
+
+  return {
+    name: error.name,
+    message: error.message,
+    status: typeof error === "object" && "status" in error ? error.status : undefined,
+    cause: error.cause,
+  };
 }
 
 function wait(ms: number) {
